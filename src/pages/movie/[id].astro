@@ -1,0 +1,54 @@
+---
+export const prerender = false;
+
+const { id } = Astro.params;
+const API_KEY = import.meta.env.TMDB_KEY;
+const res = await fetch(`https://api.themoviedb.org/3/movie/${id}?api_key=${API_KEY}&append_to_response=videos`);
+const movie = await res.json();
+const trailer = movie.videos.results.find((v) => v.type === "Trailer" && v.site === "YouTube");
+---
+
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{movie.title}</title>
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;800&display=swap" rel="stylesheet" />
+  </head>
+  <body>
+    <a href="/" class="back">← Back to movies</a>
+    <div class="detail">
+      <img src={`https://image.tmdb.org/t/p/w500${movie.poster_path}`} alt={movie.title} class="poster" />
+      <div class="info">
+        <h1>{movie.title}</h1>
+        <p class="meta">⭐ {movie.vote_average.toFixed(1)} · {movie.release_date?.slice(0, 4)} · {movie.runtime} min</p>
+        <div class="genres">{movie.genres.map((g) => <span class="genre">{g.name}</span>)}</div>
+        <p class="overview">{movie.overview}</p>
+      </div>
+    </div>
+    {trailer && (
+      <div class="trailer">
+        <h2>{movie.title} — Trailer</h2>
+        <iframe src={`https://www.youtube.com/embed/${trailer.key}`} allowfullscreen></iframe>
+      </div>
+    )}
+  </body>
+</html>
+
+<style>
+  body { background: radial-gradient(circle at top, #1a1030, #0b0b16 70%); color: #fff; font-family: "Poppins", system-ui, sans-serif; margin: 0; padding: 2rem; min-height: 100vh; }
+  .back { color: #a855f7; text-decoration: none; font-weight: 600; }
+  .back:hover { text-decoration: underline; }
+  .detail { display: flex; gap: 2rem; max-width: 900px; margin: 2rem auto; flex-wrap: wrap; }
+  .poster { width: 300px; border-radius: 16px; }
+  .info { flex: 1; min-width: 250px; }
+  .info h1 { margin-top: 0; font-size: 2.4rem; }
+  .meta { color: #ffd700; font-weight: 600; }
+  .genres { display: flex; gap: 0.5rem; flex-wrap: wrap; margin: 1rem 0; }
+  .genre { background: #2a2a4a; padding: 4px 12px; border-radius: 20px; font-size: 0.85rem; }
+  .overview { line-height: 1.7; color: #d1d5db; }
+  .trailer { max-width: 900px; margin: 2rem auto; }
+  .trailer h2 { font-size: 1.8rem; font-weight: 800; display:inline-block; background: linear-gradient(90deg, #a855f7, #ec4899, #f59e0b); background-size: 200% auto; -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; animation: shine 4s linear infinite; }
+  @keyframes shine { to { background-position: 200% center; } }
+  .trailer iframe { width: 100%; height: 500px; border: none; border-radius: 16px; }
+</style>

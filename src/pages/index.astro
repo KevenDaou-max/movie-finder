@@ -1,11 +1,182 @@
 ---
-import Welcome from '../components/Welcome.astro';
-import Layout from '../layouts/Layout.astro';
-
-// Welcome to Astro! Wondering what to do next? Check out the Astro documentation at https://docs.astro.build
-// Don't want to use any of this? Delete everything in this file, the `assets`, `components`, and `layouts` directories, and start fresh.
+// Movies load in the browser via /api/movies (true infinite scroll)
 ---
 
-<Layout>
-	<Welcome />
-</Layout>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Movie Finder</title>
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;800&display=swap" rel="stylesheet" />
+  </head>
+  <body>
+    <header class="hero">
+      <h1>🎬 Movie Finder</h1>
+      <p class="subtitle">Discover the most popular movies right now</p>
+    </header>
+	<nav class="tabs">
+  <button class="tab active" data-genre="">All</button>
+  <button class="tab" data-genre="28">Action</button>
+  <button class="tab" data-genre="35">Comedy</button>
+  <button class="tab" data-genre="27">Horror</button>
+  <button class="tab" data-genre="878">Sci-Fi</button>
+  <button class="tab" data-genre="16">Animation</button>
+  <button class="tab" data-genre="10749">Romance</button>
+</nav>
+
+    <div class="search-container">
+      <input type="text" id="search" placeholder="🔍 Search movies..." />
+    </div>
+
+    <div class="movies" id="movies"></div>
+    <div id="sentinel" style="height: 1px;"></div>
+    <p id="status" style="text-align:center;color:#9ca3af;margin:2rem;">Loading…</p>
+  </body>
+</html>
+
+<style is:global>
+.tabs { display: flex; gap: 0.75rem; justify-content: center; flex-wrap: wrap; margin-bottom: 2rem; }
+  .tab {
+    padding: 0.5rem 1.2rem;
+    border: none;
+    border-radius: 30px;
+    background: #1e1e38;
+    color: #fff;
+    font-family: inherit;
+    font-size: 0.95rem;
+    cursor: pointer;
+    transition: background 0.2s, transform 0.15s;
+  }
+  .no-results {
+    grid-column: 1 / -1;
+    text-align: center;
+    font-size: 1.2rem;
+    color: #9ca3af;
+    padding: 3rem;
+  }
+  .tab:hover { transform: translateY(-2px); }
+  .tab.active { background: linear-gradient(90deg, #a855f7, #ec4899); font-weight: 600; }
+  body { background: radial-gradient(circle at top, #1a1030, #0b0b16 70%); color: #fff; font-family: "Poppins", system-ui, sans-serif; margin: 0; padding: 2rem; min-height: 100vh; }
+  .hero { text-align: center; margin-bottom: 2rem; }
+  .hero h1 { font-size: 3.2rem; font-weight: 800; margin: 0; background: linear-gradient(90deg, #a855f7, #ec4899, #f59e0b); background-size: 200% auto; -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; animation: shine 4s linear infinite; }
+  @keyframes shine { to { background-position: 200% center; } }
+  .subtitle { color: #9ca3af; font-size: 1.1rem; margin-top: 0.5rem; }
+  .search-container { text-align: center; margin-bottom: 2.5rem; }
+  #search { width: 100%; max-width: 400px; padding: 0.8rem 1.2rem; border: none; border-radius: 30px; background: #1e1e38; color: #fff; font-size: 1rem; font-family: inherit; outline: none; transition: box-shadow 0.2s; }
+  #search:focus { box-shadow: 0 0 0 2px #a855f7; }
+  .movies { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 1.75rem; max-width: 1250px; margin: 0 auto; }
+  .movie-card { background: #15152a; border-radius: 16px; overflow: hidden; transition: transform 0.25s ease, box-shadow 0.25s ease; cursor: pointer; text-decoration: none; color: inherit; display: block; }
+  .movie-card:hover { transform: translateY(-8px); box-shadow: 0 12px 30px rgba(168, 85, 247, 0.35); }
+  .poster-wrap { position: relative; overflow: hidden; }
+  .poster-wrap img { width: 100%; display: block; transition: transform 0.4s ease; }
+  .movie-card:hover .poster-wrap img { transform: scale(1.08); }
+  .rating { position: absolute; top: 10px; right: 10px; background: rgba(0,0,0,0.75); color: #ffd700; font-weight: 600; font-size: 0.85rem; padding: 4px 8px; border-radius: 8px; backdrop-filter: blur(4px); }
+  .movie-card h3 { font-size: 0.95rem; font-weight: 600; margin: 0.85rem 0.85rem 1rem; line-height: 1.3; }
+</style>
+
+<script>
+  const grid = document.getElementById("movies");
+  const searchInput = document.getElementById("search");
+  const sentinel = document.getElementById("sentinel");
+  const status = document.getElementById("status");
+  let page = 1;
+  let loading = false;
+  let hasMore = true;
+  let currentGenre = "";
+
+  function renderMovies(movies) {
+    movies.forEach((movie) => {
+      if (!movie.poster_path) return;
+      const card = document.createElement("a");
+      card.href = `/movie/${movie.id}`;
+      card.className = "movie-card";
+      card.innerHTML = `
+        <div class="poster-wrap">
+          <img src="https://image.tmdb.org/t/p/w500${movie.poster_path}" alt="${movie.title}" />
+          <span class="rating">⭐ ${movie.vote_average.toFixed(1)}</span>
+        </div>
+        <h3>${movie.title}</h3>`;
+      grid.appendChild(card);
+    });
+  }
+
+  function resetBrowse() {
+    page = 1;
+    hasMore = true;
+    status.style.display = "";
+    status.textContent = "Loading…";
+    grid.innerHTML = "";
+    loadMore();
+  }
+
+  async function loadMore() {
+    if (loading || !hasMore) return;
+    loading = true;
+    try {
+      const res = await fetch(`/api/movies?page=${page}&genre=${currentGenre}`);
+      const data = await res.json();
+      renderMovies(data.results);
+      if (page >= data.total_pages) {
+        hasMore = false;
+        status.style.display = "none";   // no more movies → remove loading
+      } else {
+        page++;
+      }
+    } catch (e) {
+      status.textContent = "Failed to load movies.";
+    }
+    loading = false;
+  }
+
+  // genre tabs
+  document.querySelectorAll(".tab").forEach((tab) => {
+    tab.addEventListener("click", () => {
+      document.querySelector(".tab.active")?.classList.remove("active");
+      tab.classList.add("active");
+      currentGenre = tab.dataset.genre;
+      searchInput.value = "";
+      resetBrowse();
+    });
+  });
+
+  // infinite scroll
+  const observer = new IntersectionObserver((entries) => {
+    if (entries[0].isIntersecting && !searchInput.value) loadMore();
+  });
+  observer.observe(sentinel);
+
+  // real search (debounced)
+  let searchTimeout;
+  searchInput.addEventListener("input", () => {
+    clearTimeout(searchTimeout);
+    searchTimeout = setTimeout(async () => {
+      const term = searchInput.value.trim();
+      if (!term) {
+        resetBrowse();
+        return;
+      }
+      try {
+        status.style.display = "none";   // no loading text during search
+        const res = await fetch(`/api/search?q=${encodeURIComponent(term)}`);
+        const data = await res.json();
+
+        let results = data.results;
+        if (currentGenre) {
+          const genreId = Number(currentGenre);
+          results = results.filter((m) => Array.isArray(m.genre_ids) && m.genre_ids.includes(genreId));
+        }
+
+        grid.innerHTML = "";
+        if (results.length === 0) {
+          grid.innerHTML = `<p class="no-results">No movies found for "${term}" 😕</p>`;
+        } else {
+          renderMovies(results);
+        }
+      } catch (e) {
+        grid.innerHTML = `<p class="no-results">Search failed.</p>`;
+      }
+    }, 400);
+  });
+
+  loadMore();
+</script>
