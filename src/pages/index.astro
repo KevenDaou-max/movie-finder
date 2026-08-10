@@ -114,6 +114,7 @@
     loading = true;
     try {
       const res = await fetch(`/api/movies?page=${page}&genre=${currentGenre}`);
+      if (!res.ok) throw new Error(`/api/movies responded ${res.status}`);
       const data = await res.json();
       renderMovies(data.results);
       if (page >= data.total_pages) {
@@ -158,6 +159,7 @@
       try {
         status.style.display = "none";   // no loading text during search
         const res = await fetch(`/api/search?q=${encodeURIComponent(term)}`);
+        if (!res.ok) throw new Error(`/api/search responded ${res.status}`);
         const data = await res.json();
 
         let results = data.results;

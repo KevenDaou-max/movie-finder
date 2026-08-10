@@ -6,5 +6,12 @@
   "assets": {
     "binding": "ASSETS",
     "directory": "./dist"
-  }
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "movie-finder-db",
+      "database_id": "a52140a4-4f2d-4743-9f8d-630139f7aa21"
+    }
+  ]
 }

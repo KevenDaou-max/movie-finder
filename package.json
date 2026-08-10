@@ -9,7 +9,10 @@
     "dev": "astro dev",
     "build": "astro build",
     "preview": "astro preview",
-    "astro": "astro"
+    "astro": "astro",
+    "types": "wrangler types",
+    "db:migrate": "wrangler d1 migrations apply movie-finder-db --local",
+    "db:migrate:remote": "wrangler d1 migrations apply movie-finder-db --remote"
   },
   "dependencies": {
     "@astrojs/cloudflare": "^14.2.0",

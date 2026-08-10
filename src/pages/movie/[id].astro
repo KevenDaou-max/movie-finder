@@ -1,11 +1,16 @@
 ---
 export const prerender = false;
 
-const { id } = Astro.params;
-const API_KEY = import.meta.env.TMDB_KEY;
-const res = await fetch(`https://api.themoviedb.org/3/movie/${id}?api_key=${API_KEY}&append_to_response=videos`);
-const movie = await res.json();
-const trailer = movie.videos.results.find((v) => v.type === "Trailer" && v.site === "YouTube");
+import { getMovieDetail } from "../../lib/catalog.js";
+
+const id = Number(Astro.params.id);
+const movie = Number.isInteger(id) ? await getMovieDetail(id, {
+  waitUntil: Astro.locals.cfContext?.waitUntil.bind(Astro.locals.cfContext),
+}) : null;
+
+if (!movie) {
+  return new Response("Movie not found", { status: 404 });
+}
 ---
 
 <html lang="en">
@@ -21,15 +26,19 @@ const trailer = movie.videos.results.find((v) => v.type === "Trailer" && v.site 
       <img src={`https://image.tmdb.org/t/p/w500${movie.poster_path}`} alt={movie.title} class="poster" />
       <div class="info">
         <h1>{movie.title}</h1>
-        <p class="meta">⭐ {movie.vote_average.toFixed(1)} · {movie.release_date?.slice(0, 4)} · {movie.runtime} min</p>
-        <div class="genres">{movie.genres.map((g) => <span class="genre">{g.name}</span>)}</div>
+        <p class="meta">
+          ⭐ {(movie.vote_average ?? 0).toFixed(1)}
+          {movie.release_date && <> · {movie.release_date.slice(0, 4)}</>}
+          {movie.runtime && <> · {movie.runtime} min</>}
+        </p>
+        <div class="genres">{movie.genres.map((name) => <span class="genre">{name}</span>)}</div>
         <p class="overview">{movie.overview}</p>
       </div>
     </div>
-    {trailer && (
+    {movie.trailer_key && (
       <div class="trailer">
         <h2>{movie.title} — Trailer</h2>
-        <iframe src={`https://www.youtube.com/embed/${trailer.key}`} allowfullscreen></iframe>
+        <iframe src={`https://www.youtube.com/embed/${movie.trailer_key}`} allowfullscreen></iframe>
       </div>
     )}
   </body>
