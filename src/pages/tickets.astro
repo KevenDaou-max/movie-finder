@@ -1,0 +1,159 @@
+---
+// No server data: the ticket ids live in the browser, so this page is a static
+// shell that fetches its own contents.
+---
+
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>My Tickets — Movie Finder</title>
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;800&display=swap" rel="stylesheet" />
+  </head>
+  <body>
+    <a href="/" class="back">← Back to movies</a>
+
+    <header class="hero">
+      <h1>🎟️ My Tickets</h1>
+      <p class="subtitle">Bookings saved in this browser</p>
+    </header>
+
+    <p class="mock-note">
+      <strong>Mock bookings.</strong> The cinemas, showtimes and payments are invented.
+      Tickets are remembered by <em>this browser only</em> — there are no accounts, so clearing
+      site data or switching device makes them unreachable.
+    </p>
+
+    <div class="tickets" id="tickets"></div>
+    <p class="status" id="status">Loading…</p>
+  </body>
+</html>
+
+<script>
+  import { readTicketIds } from "../lib/ticket-storage.js";
+  import { formatShowtime } from "../lib/showtimes.js";
+  import { formatCents } from "../lib/money.js";
+
+  const list = document.getElementById("tickets");
+  const status = document.getElementById("status");
+
+  const STATUS_LABELS = { booked: "Awaiting payment", paid: "Paid", redeemed: "Redeemed" };
+
+  function render(tickets) {
+    list.innerHTML = "";
+
+    for (const ticket of tickets) {
+      const total = ticket.unit_price_cents * ticket.seats;
+
+      const card = document.createElement("div");
+      card.className = "ticket";
+      card.innerHTML = `
+        <div class="ticket-head">
+          <h2>${ticket.movie_title}</h2>
+          <span class="badge badge-${ticket.status}">${STATUS_LABELS[ticket.status] ?? ticket.status}</span>
+        </div>
+        <p class="detail-line">${ticket.cinema}</p>
+        <p class="detail-line">${formatShowtime(ticket.showtime)}</p>
+        <p class="detail-line">${ticket.seats} seat(s) · ${formatCents(total)}</p>
+        ${ticket.confirmation ? `<p class="code">${ticket.confirmation}</p>` : ""}
+        <div class="actions"></div>
+        <p class="row-status"></p>`;
+
+      const actions = card.querySelector(".actions");
+
+      if (ticket.status === "booked") {
+        const link = document.createElement("a");
+        link.className = "primary";
+        link.href = `/checkout/${ticket.id}`;
+        link.textContent = "Complete payment";
+        actions.appendChild(link);
+      }
+
+      if (ticket.status === "paid") {
+        const button = document.createElement("button");
+        button.className = "primary";
+        button.textContent = "Redeem";
+        button.addEventListener("click", () => redeem(ticket.id, button, card.querySelector(".row-status")));
+        actions.appendChild(button);
+      }
+
+      list.appendChild(card);
+    }
+  }
+
+  async function redeem(id, button, rowStatus) {
+    button.disabled = true;
+    rowStatus.textContent = "Redeeming…";
+
+    try {
+      const res = await fetch(`/api/tickets/${id}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "redeem" }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? `Redeem failed (${res.status})`);
+      // Reload the whole list from the server rather than patching one card.
+      await load();
+    } catch (err) {
+      rowStatus.textContent = err.message;
+      button.disabled = false;
+    }
+  }
+
+  async function load() {
+    const ids = readTicketIds();
+
+    if (!ids.length) {
+      list.innerHTML = "";
+      status.textContent = "No tickets yet. Book one from any movie page.";
+      return;
+    }
+
+    try {
+      const res = await fetch("/api/tickets/lookup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? `Could not load tickets (${res.status})`);
+
+      render(data.tickets);
+      // Ids can outlive their rows (e.g. a wiped database), so report on what
+      // actually came back rather than on what the browser remembers.
+      status.textContent = data.tickets.length ? "" : "No tickets found for this browser.";
+    } catch (err) {
+      status.textContent = err.message;
+    }
+  }
+
+  load();
+</script>
+
+<style is:global>
+  body { background: radial-gradient(circle at top, #1a1030, #0b0b16 70%); color: #fff; font-family: "Poppins", system-ui, sans-serif; margin: 0; padding: 2rem; min-height: 100vh; }
+  .back { color: #a855f7; text-decoration: none; font-weight: 600; }
+  .back:hover { text-decoration: underline; }
+  .hero { text-align: center; margin-bottom: 1.5rem; }
+  .hero h1 { font-size: 2.8rem; font-weight: 800; margin: 0; background: linear-gradient(90deg, #a855f7, #ec4899, #f59e0b); background-size: 200% auto; -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; animation: shine 4s linear infinite; }
+  @keyframes shine { to { background-position: 200% center; } }
+  .subtitle { color: #9ca3af; font-size: 1.05rem; margin-top: 0.5rem; }
+  .mock-note { max-width: 900px; margin: 0 auto 2rem; background: rgba(245, 158, 11, 0.12); border: 1px solid rgba(245, 158, 11, 0.35); color: #fcd34d; padding: 0.8rem 1.1rem; border-radius: 12px; font-size: 0.85rem; line-height: 1.6; }
+  .tickets { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 1.5rem; max-width: 900px; margin: 0 auto; }
+  .ticket { background: #15152a; border-radius: 16px; padding: 1.25rem 1.4rem; }
+  .ticket-head { display: flex; justify-content: space-between; align-items: start; gap: 0.75rem; }
+  .ticket h2 { font-size: 1.1rem; margin: 0 0 0.75rem; line-height: 1.35; }
+  .badge { font-size: 0.7rem; font-weight: 600; padding: 4px 10px; border-radius: 20px; white-space: nowrap; text-transform: uppercase; letter-spacing: 0.04em; }
+  .badge-booked { background: rgba(245, 158, 11, 0.18); color: #fcd34d; }
+  .badge-paid { background: rgba(74, 222, 128, 0.15); color: #4ade80; }
+  .badge-redeemed { background: #2a2a4a; color: #9ca3af; }
+  .detail-line { color: #d1d5db; font-size: 0.9rem; margin: 0.3rem 0; }
+  .code { font-size: 1.2rem; font-weight: 800; letter-spacing: 0.1em; color: #4ade80; margin: 0.9rem 0 0; }
+  .actions { margin-top: 1rem; }
+  .primary { display: inline-block; border: none; border-radius: 30px; padding: 0.6rem 1.5rem; font-family: inherit; font-size: 0.9rem; font-weight: 600; color: #fff; text-decoration: none; background: linear-gradient(90deg, #a855f7, #ec4899); cursor: pointer; transition: transform 0.15s ease, opacity 0.2s ease; }
+  .primary:hover:not(:disabled) { transform: translateY(-2px); }
+  .primary:disabled { opacity: 0.55; cursor: default; }
+  .row-status { color: #f87171; font-size: 0.85rem; margin: 0.6rem 0 0; min-height: 1em; }
+  .status { text-align: center; color: #9ca3af; margin: 2rem; }
+</style>

@@ -1,8 +1,9 @@
 import { env } from "cloudflare:workers";
-import { fetchDetail, fetchList, fetchSearch } from "./tmdb.js";
+import { fetchDetail, fetchList, fetchSearch, fetchWatchProviders, WATCH_REGION } from "./tmdb.js";
 
-// Seconds. Details barely change; popularity ordering does.
-const TTL = { list: 60 * 60, search: 15 * 60, detail: 24 * 60 * 60 };
+// Seconds. Details barely change; popularity ordering does; streaming rights
+// change with licensing deals, so providers sit between the two.
+const TTL = { list: 60 * 60, search: 15 * 60, detail: 24 * 60 * 60, providers: 6 * 60 * 60 };
 
 const nowSeconds = () => Math.floor(Date.now() / 1000);
 const isFresh = (syncedAt, ttl) => typeof syncedAt === "number" && nowSeconds() - syncedAt < ttl;
@@ -214,6 +215,103 @@ export function getSearchPage({ query, page, waitUntil }) {
     fetchFresh: () => fetchSearch({ query, page }),
     waitUntil,
   });
+}
+
+/**
+ * Title straight from the cache, for stamping onto a booking. Returns null if
+ * the movie isn't cached or D1 is unavailable — a soft dependency, since the
+ * caller falls back to the title the client sent.
+ */
+export async function getCachedTitle(movieId) {
+  try {
+    const row = await db().prepare("SELECT title FROM movies WHERE id = ?").bind(movieId).first();
+    return row?.title ?? null;
+  } catch (err) {
+    return withoutDb(err);
+  }
+}
+
+// Rendered in this order; TMDB also uses `free` and `ads` for some titles.
+const OFFER_TYPES = ["flatrate", "free", "ads", "rent", "buy"];
+
+/**
+ * Always returns an object, never null: an empty result means "we know there is
+ * nothing", which is different from "we could not find out".
+ */
+function shapeProviders(block, source) {
+  const region = block ?? {};
+  const offers = {};
+
+  for (const type of OFFER_TYPES) {
+    const list = region[type];
+    if (Array.isArray(list) && list.length) {
+      offers[type] = list
+        // TMDB's own ranking; slice() because sort mutates.
+        .slice()
+        .sort((a, b) => (a.display_priority ?? 0) - (b.display_priority ?? 0))
+        .map((p) => ({ id: p.provider_id, name: p.provider_name, logo_path: p.logo_path }));
+    }
+  }
+
+  return { link: region.link ?? null, offers, hasOffers: Object.keys(offers).length > 0, source };
+}
+
+/** Streaming availability for one movie in WATCH_REGION, or null if unknowable. */
+export async function getWatchProviders(movieId, { waitUntil } = {}) {
+  let cached = null;
+  try {
+    cached = await db()
+      .prepare("SELECT payload, fetched_at FROM watch_providers WHERE movie_id = ? AND region = ?")
+      .bind(movieId, WATCH_REGION)
+      .first();
+  } catch (err) {
+    withoutDb(err);
+  }
+
+  if (cached && isFresh(cached.fetched_at, TTL.providers)) {
+    try {
+      return shapeProviders(JSON.parse(cached.payload), "cache");
+    } catch (err) {
+      withoutDb(err);
+    }
+  }
+
+  try {
+    const data = await fetchWatchProviders(movieId);
+    // TMDB returns ~110 regions; only the one we render is worth storing.
+    const block = data.results?.[WATCH_REGION] ?? null;
+    const ts = nowSeconds();
+
+    const write = (async () => {
+      await db()
+        .prepare(
+          `INSERT INTO watch_providers (movie_id, region, payload, fetched_at)
+           VALUES (?, ?, ?, ?)
+           ON CONFLICT(movie_id, region) DO UPDATE SET
+             payload = excluded.payload,
+             fetched_at = excluded.fetched_at`
+        )
+        // Store {} rather than skipping: "no providers" is a real answer, and
+        // caching it stops every view of an unavailable film re-asking TMDB.
+        .bind(movieId, WATCH_REGION, JSON.stringify(block ?? {}), ts)
+        .run();
+    })().catch(withoutDb);
+
+    if (waitUntil) waitUntil(write);
+    else await write;
+
+    return shapeProviders(block, "tmdb");
+  } catch (err) {
+    console.error(`[catalog] watch providers failed for ${movieId}:`, err);
+    if (cached) {
+      try {
+        return shapeProviders(JSON.parse(cached.payload), "stale");
+      } catch (dbErr) {
+        withoutDb(dbErr);
+      }
+    }
+    return null;
+  }
 }
 
 function shapeDetail(row, genreNames, source) {

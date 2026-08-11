@@ -43,3 +43,16 @@ export function fetchSearch({ query, page }) {
 export function fetchDetail(id) {
   return tmdb(`/movie/${id}`, { append_to_response: "videos" });
 }
+
+/** Change this to serve a different country's streaming availability. */
+export const WATCH_REGION = "US";
+
+/**
+ * Deliberately a separate call rather than `append_to_response=watch/providers`
+ * on the detail fetch: availability changes with licensing deals, runtime never
+ * does, so the two need independent TTLs. The detail cache hit would otherwise
+ * skip this refresh entirely.
+ */
+export function fetchWatchProviders(id) {
+  return tmdb(`/movie/${id}/watch/providers`);
+}

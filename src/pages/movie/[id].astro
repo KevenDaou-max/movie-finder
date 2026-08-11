@@ -1,16 +1,35 @@
 ---
 export const prerender = false;
 
-import { getMovieDetail } from "../../lib/catalog.js";
+import { getMovieDetail, getWatchProviders } from "../../lib/catalog.js";
+import { generateShowtimes } from "../../lib/showtimes.js";
+import { formatCents } from "../../lib/money.js";
+import { WATCH_REGION } from "../../lib/tmdb.js";
 
 const id = Number(Astro.params.id);
-const movie = Number.isInteger(id) ? await getMovieDetail(id, {
-  waitUntil: Astro.locals.cfContext?.waitUntil.bind(Astro.locals.cfContext),
-}) : null;
+const waitUntil = Astro.locals.cfContext?.waitUntil.bind(Astro.locals.cfContext);
+
+// Two independent caches, fetched in parallel so the second costs no wall clock.
+const [movie, providers] = Number.isInteger(id)
+  ? await Promise.all([getMovieDetail(id, { waitUntil }), getWatchProviders(id, { waitUntil })])
+  : [null, null];
 
 if (!movie) {
   return new Response("Movie not found", { status: 404 });
 }
+
+// Same observability as the API routes, on a server-rendered page: each cache
+// reports its own hit/miss state independently.
+Astro.response.headers.set(
+  "X-Movie-Cache",
+  `detail=${movie.source}; providers=${providers?.source ?? "none"}`
+);
+
+const OFFER_LABELS = { flatrate: "Stream", free: "Free", ads: "Free with ads", rent: "Rent", buy: "Buy" };
+const offerSections = providers ? Object.entries(providers.offers) : [];
+
+// Invented, but deterministic: the same movie always offers the same lineup.
+const showtimes = generateShowtimes(id);
 ---
 
 <html lang="en">
@@ -35,6 +54,71 @@ if (!movie) {
         <p class="overview">{movie.overview}</p>
       </div>
     </div>
+
+    <section class="panel">
+      <h2>Where to Watch <span class="region">{WATCH_REGION}</span></h2>
+      {offerSections.length > 0 ? (
+        <>
+          {offerSections.map(([type, list]) => (
+            <div class="offer-row">
+              <h3>{OFFER_LABELS[type] ?? type}</h3>
+              <div class="providers">
+                {list.map((provider) => (
+                  <span class="provider">
+                    {provider.logo_path && (
+                      <img src={`https://image.tmdb.org/t/p/w92${provider.logo_path}`} alt="" width="32" height="32" loading="lazy" />
+                    )}
+                    {provider.name}
+                  </span>
+                ))}
+              </div>
+            </div>
+          ))}
+          {providers.link && (
+            <a class="jw-link" href={providers.link} target="_blank" rel="noopener noreferrer">More options on TMDB →</a>
+          )}
+          <p class="attribution">Streaming availability provided by JustWatch via TMDB.</p>
+        </>
+      ) : (
+        <p class="empty">Not currently available to stream.</p>
+      )}
+    </section>
+
+    <section class="panel" id="booking" data-movie-id={String(movie.id)} data-movie-title={movie.title}>
+      <h2>Book Tickets</h2>
+      <p class="mock-note">
+        <strong>Mock flow.</strong> These cinemas, showtimes and prices are invented, and no real payment is taken.
+        The booking record itself is real and is saved to the database.
+      </p>
+
+      <div class="booking-grid">
+        <label>
+          Cinema
+          <select id="cinema">
+            {showtimes.map((venue) => <option value={venue.name}>{venue.name}</option>)}
+          </select>
+        </label>
+        <label>
+          Showtime
+          <select id="showtime"></select>
+        </label>
+        <label>
+          Seats
+          <select id="seats">
+            {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((n) => <option value={String(n)}>{n}</option>)}
+          </select>
+        </label>
+      </div>
+
+      <p class="total" id="total"></p>
+      <button id="book" class="primary">Book now</button>
+      <p class="form-status" id="booking-status" role="status"></p>
+
+      {/* Data island: the generated lineup, handed to the client as JSON rather
+          than re-derived there, so both sides agree on prices and options. */}
+      <script type="application/json" id="showtimes-data" is:inline set:html={JSON.stringify(showtimes)}></script>
+    </section>
+
     {movie.trailer_key && (
       <div class="trailer">
         <h2>{movie.title} — Trailer</h2>
@@ -43,6 +127,95 @@ if (!movie) {
     )}
   </body>
 </html>
+
+<script>
+  import { rememberTicketId } from "../../lib/ticket-storage.js";
+  import { formatCents } from "../../lib/money.js";
+
+  const panel = document.getElementById("booking");
+  const cinemaSelect = document.getElementById("cinema");
+  const showtimeSelect = document.getElementById("showtime");
+  const seatsSelect = document.getElementById("seats");
+  const totalEl = document.getElementById("total");
+  const bookButton = document.getElementById("book");
+  const statusEl = document.getElementById("booking-status");
+
+  const venues = JSON.parse(document.getElementById("showtimes-data").textContent);
+  const movieId = Number(panel.dataset.movieId);
+  const movieTitle = panel.dataset.movieTitle;
+
+  // Dates are UTC wall-clock strings, so format them as UTC too.
+  const dayLabel = (day) =>
+    new Date(`${day}T00:00:00Z`).toLocaleDateString(undefined, {
+      weekday: "short", month: "short", day: "numeric", timeZone: "UTC",
+    });
+
+  function fillShowtimes() {
+    const venue = venues.find((v) => v.name === cinemaSelect.value);
+    showtimeSelect.innerHTML = "";
+
+    for (const day of venue.days) {
+      const group = document.createElement("optgroup");
+      group.label = dayLabel(day.day);
+      for (const slot of day.times) {
+        const option = document.createElement("option");
+        option.value = slot.showtime;
+        option.textContent = `${slot.time} — ${formatCents(slot.unit_price_cents)}`;
+        // Carried on the option so the total needs no lookup.
+        option.dataset.unitPriceCents = String(slot.unit_price_cents);
+        group.appendChild(option);
+      }
+      showtimeSelect.appendChild(group);
+    }
+    updateTotal();
+  }
+
+  function updateTotal() {
+    const option = showtimeSelect.selectedOptions[0];
+    if (!option) {
+      totalEl.textContent = "";
+      return;
+    }
+    const unit = Number(option.dataset.unitPriceCents);
+    const seats = Number(seatsSelect.value);
+    // Display only. The server recomputes this and ignores anything we send.
+    totalEl.textContent = `${seats} × ${formatCents(unit)} = ${formatCents(unit * seats)}`;
+  }
+
+  cinemaSelect.addEventListener("change", fillShowtimes);
+  showtimeSelect.addEventListener("change", updateTotal);
+  seatsSelect.addEventListener("change", updateTotal);
+
+  bookButton.addEventListener("click", async () => {
+    bookButton.disabled = true;
+    statusEl.textContent = "Booking…";
+
+    try {
+      const res = await fetch("/api/tickets", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          movie_id: movieId,
+          movie_title: movieTitle,
+          cinema: cinemaSelect.value,
+          showtime: showtimeSelect.value,
+          seats: Number(seatsSelect.value),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? `Booking failed (${res.status})`);
+
+      // Remember before navigating: an abandoned checkout is still your ticket.
+      rememberTicketId(data.ticket.id);
+      window.location.href = `/checkout/${data.ticket.id}`;
+    } catch (err) {
+      statusEl.textContent = err.message;
+      bookButton.disabled = false;
+    }
+  });
+
+  fillShowtimes();
+</script>
 
 <style>
   body { background: radial-gradient(circle at top, #1a1030, #0b0b16 70%); color: #fff; font-family: "Poppins", system-ui, sans-serif; margin: 0; padding: 2rem; min-height: 100vh; }
@@ -60,4 +233,27 @@ if (!movie) {
   .trailer h2 { font-size: 1.8rem; font-weight: 800; display:inline-block; background: linear-gradient(90deg, #a855f7, #ec4899, #f59e0b); background-size: 200% auto; -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; animation: shine 4s linear infinite; }
   @keyframes shine { to { background-position: 200% center; } }
   .trailer iframe { width: 100%; height: 500px; border: none; border-radius: 16px; }
+
+  .panel { max-width: 900px; margin: 2rem auto; background: #15152a; border-radius: 16px; padding: 1.5rem 1.75rem; }
+  .panel h2 { margin-top: 0; font-size: 1.5rem; font-weight: 800; }
+  .region { font-size: 0.7rem; font-weight: 600; color: #9ca3af; background: #2a2a4a; padding: 3px 10px; border-radius: 20px; vertical-align: middle; margin-left: 0.5rem; }
+  .offer-row { margin-bottom: 1.1rem; }
+  .offer-row h3 { margin: 0 0 0.6rem; font-size: 0.8rem; font-weight: 600; color: #9ca3af; text-transform: uppercase; letter-spacing: 0.05em; }
+  .providers { display: flex; gap: 0.6rem; flex-wrap: wrap; }
+  .provider { display: inline-flex; align-items: center; gap: 0.5rem; background: #2a2a4a; padding: 6px 12px 6px 6px; border-radius: 12px; font-size: 0.85rem; }
+  .provider img { border-radius: 8px; display: block; }
+  .jw-link { color: #a855f7; text-decoration: none; font-weight: 600; font-size: 0.9rem; }
+  .jw-link:hover { text-decoration: underline; }
+  .attribution { color: #6b7280; font-size: 0.75rem; margin: 0.9rem 0 0; }
+  .empty { color: #9ca3af; margin: 0; }
+  .mock-note { background: rgba(245, 158, 11, 0.12); border: 1px solid rgba(245, 158, 11, 0.35); color: #fcd34d; padding: 0.7rem 1rem; border-radius: 12px; font-size: 0.85rem; line-height: 1.5; }
+  .booking-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem; margin: 1.25rem 0; }
+  .booking-grid label { display: flex; flex-direction: column; gap: 0.4rem; font-size: 0.8rem; font-weight: 600; color: #9ca3af; text-transform: uppercase; letter-spacing: 0.05em; }
+  .booking-grid select { background: #1e1e38; color: #fff; border: none; border-radius: 12px; padding: 0.7rem 0.9rem; font-family: inherit; font-size: 0.95rem; outline: none; }
+  .booking-grid select:focus { box-shadow: 0 0 0 2px #a855f7; }
+  .total { font-weight: 600; color: #ffd700; margin: 0 0 1rem; }
+  .primary { border: none; border-radius: 30px; padding: 0.8rem 2rem; font-family: inherit; font-size: 1rem; font-weight: 600; color: #fff; background: linear-gradient(90deg, #a855f7, #ec4899); cursor: pointer; transition: transform 0.15s ease, opacity 0.2s ease; }
+  .primary:hover:not(:disabled) { transform: translateY(-2px); }
+  .primary:disabled { opacity: 0.55; cursor: default; }
+  .form-status { color: #f87171; font-size: 0.9rem; min-height: 1.2em; margin: 0.8rem 0 0; }
 </style>
