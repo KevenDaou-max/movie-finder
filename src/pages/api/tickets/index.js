@@ -1,15 +1,31 @@
 import { getCachedTitle } from "../../../lib/catalog.js";
 import { BOOKING_CAP, BOOKING_WINDOW_SECONDS, bookingWindowStart, getClientKey } from "../../../lib/rate-limit.js";
 import { findSlot } from "../../../lib/showtimes.js";
-import { bookingUsage, createTicket } from "../../../lib/tickets.js";
+import { bookingUsage, createTicket, getTicketsForUser } from "../../../lib/tickets.js";
 
 export const prerender = false;
 
 const MAX_TITLE_LENGTH = 200;
 
 const bad = (message) => Response.json({ error: message }, { status: 400 });
+const unauthorised = () => Response.json({ error: "You must be logged in." }, { status: 401 });
 
-export async function POST({ request }) {
+/** This browser's tickets are gone; these are THIS USER's tickets. */
+export async function GET({ locals }) {
+  if (!locals.user) return unauthorised();
+
+  try {
+    // Takes no parameters at all: nothing the caller sends can widen the result.
+    return Response.json({ tickets: await getTicketsForUser(locals.user.id) });
+  } catch (err) {
+    console.error("[api/tickets] list failed", err);
+    return Response.json({ error: "Could not load your tickets." }, { status: 500 });
+  }
+}
+
+export async function POST({ request, locals }) {
+  if (!locals.user) return unauthorised();
+
   let body;
   try {
     body = await request.json();
@@ -43,27 +59,26 @@ export async function POST({ request }) {
   const clientTitle = typeof body.movie_title === "string" ? body.movie_title.trim() : "";
   const movieTitle = (await getCachedTitle(movieId)) ?? clientTitle.slice(0, MAX_TITLE_LENGTH) ?? "";
 
-  // Validation runs first so junk requests never reach the database.
-  const clientKey = await getClientKey(request);
   const windowStart = bookingWindowStart();
 
   try {
     const ticket = await createTicket({
+      // Ownership comes from the session. Anything in the body is ignored, the
+      // same way the price is: a caller must never be able to name the owner.
+      userId: locals.user.id,
       movieId,
       movieTitle: movieTitle || "Unknown title",
       cinema: slot.cinema,
       showtime: slot.showtime,
       seats,
       unitPriceCents: slot.unit_price_cents,
-      clientKey,
+      clientKey: await getClientKey(request),
       cap: BOOKING_CAP,
       windowStart,
     });
 
     if (!ticket) {
-      // The insert declined: this client is at its cap. Work out when the
-      // oldest booking in the window ages out so Retry-After is honest.
-      const { oldest } = await bookingUsage(clientKey, windowStart);
+      const { oldest } = await bookingUsage(locals.user.id, windowStart);
       const retryAfter = oldest
         ? Math.max(1, oldest + BOOKING_WINDOW_SECONDS - Math.floor(Date.now() / 1000))
         : BOOKING_WINDOW_SECONDS;

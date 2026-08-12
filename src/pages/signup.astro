@@ -1,0 +1,105 @@
+---
+export const prerender = false;
+
+import { safeNextPath } from "../lib/auth.js";
+
+const next = safeNextPath(Astro.url.searchParams.get("next"));
+
+if (Astro.locals.user) {
+  return Astro.redirect(next);
+}
+---
+
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Sign up — Movie Finder</title>
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;800&display=swap" rel="stylesheet" />
+  </head>
+  <body>
+    <a href="/" class="back">← Back to movies</a>
+
+    <div class="panel" data-next={next}>
+      <h1>Sign up</h1>
+      <p class="sub">Email and a 6-12 digit pincode. No verification email is sent.</p>
+
+      <form id="form" novalidate>
+        <label>
+          Email
+          <input type="email" id="email" autocomplete="email" required />
+        </label>
+        <label>
+          Pincode (6-12 digits)
+          <input type="password" id="pin" inputmode="numeric" autocomplete="new-password" required />
+        </label>
+        <label>
+          Confirm pincode
+          <input type="password" id="confirm" inputmode="numeric" autocomplete="new-password" required />
+        </label>
+        <button type="submit" class="primary" id="submit">Create account</button>
+      </form>
+
+      <p class="form-status" id="status" role="alert"></p>
+      <p class="alt">Already have an account? <a href={`/login?next=${encodeURIComponent(next)}`}>Log in</a></p>
+    </div>
+  </body>
+</html>
+
+<script>
+  const panel = document.querySelector("[data-next]");
+  const next = panel.dataset.next;
+  const form = document.getElementById("form");
+  const status = document.getElementById("status");
+  const submit = document.getElementById("submit");
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const pin = document.getElementById("pin").value;
+
+    // Convenience only. The server revalidates everything; nothing here is trusted.
+    if (pin !== document.getElementById("confirm").value) {
+      status.textContent = "Pincodes do not match.";
+      return;
+    }
+
+    submit.disabled = true;
+    status.textContent = "Creating account…";
+
+    try {
+      const res = await fetch("/api/auth/signup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: document.getElementById("email").value, pin }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? `Sign up failed (${res.status})`);
+
+      window.location.href = next;
+    } catch (err) {
+      status.textContent = err.message;
+      submit.disabled = false;
+    }
+  });
+</script>
+
+<style>
+  body { background: radial-gradient(circle at top, #1a1030, #0b0b16 70%); color: #fff; font-family: "Poppins", system-ui, sans-serif; margin: 0; padding: 2rem; min-height: 100vh; }
+  .back { color: #a855f7; text-decoration: none; font-weight: 600; }
+  .back:hover { text-decoration: underline; }
+  .panel { max-width: 420px; margin: 3rem auto; background: #15152a; border-radius: 16px; padding: 1.75rem; }
+  .panel h1 { margin: 0; font-size: 2rem; font-weight: 800; background: linear-gradient(90deg, #a855f7, #ec4899, #f59e0b); background-size: 200% auto; -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; animation: shine 4s linear infinite; display: inline-block; }
+  @keyframes shine { to { background-position: 200% center; } }
+  .sub { color: #9ca3af; font-size: 0.95rem; margin: 0.4rem 0 1.5rem; line-height: 1.5; }
+  form { display: flex; flex-direction: column; gap: 1rem; }
+  label { display: flex; flex-direction: column; gap: 0.4rem; font-size: 0.8rem; font-weight: 600; color: #9ca3af; text-transform: uppercase; letter-spacing: 0.05em; }
+  input { background: #1e1e38; color: #fff; border: none; border-radius: 12px; padding: 0.8rem 1rem; font-family: inherit; font-size: 1rem; outline: none; }
+  input:focus { box-shadow: 0 0 0 2px #a855f7; }
+  .primary { border: none; border-radius: 30px; padding: 0.85rem 2rem; font-family: inherit; font-size: 1rem; font-weight: 600; color: #fff; background: linear-gradient(90deg, #a855f7, #ec4899); cursor: pointer; margin-top: 0.5rem; transition: transform 0.15s ease, opacity 0.2s ease; }
+  .primary:hover:not(:disabled) { transform: translateY(-2px); }
+  .primary:disabled { opacity: 0.55; cursor: default; }
+  .form-status { color: #f87171; font-size: 0.9rem; min-height: 1.2em; margin: 1rem 0 0; text-align: center; }
+  .alt { color: #9ca3af; font-size: 0.9rem; text-align: center; margin: 0.5rem 0 0; }
+  .alt a { color: #a855f7; text-decoration: none; font-weight: 600; }
+  .alt a:hover { text-decoration: underline; }
+</style>

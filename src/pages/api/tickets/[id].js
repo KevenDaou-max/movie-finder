@@ -11,7 +11,11 @@ const STATE_PHRASE = {
   redeemed: "already redeemed",
 };
 
-export async function POST({ params, request }) {
+export async function POST({ params, request, locals }) {
+  if (!locals.user) {
+    return Response.json({ error: "You must be logged in." }, { status: 401 });
+  }
+
   let body;
   try {
     body = await request.json();
@@ -25,15 +29,16 @@ export async function POST({ params, request }) {
   }
 
   try {
-    const { ok, ticket } = await run(params.id);
+    // The user id goes into the UPDATE's WHERE clause, so a ticket belonging to
+    // someone else simply matches nothing — the action cannot occur.
+    const { ok, ticket } = await run(params.id, locals.user.id);
 
     if (!ticket) {
+      // Either no such ticket, or not this user's. Answering 404 for both means
+      // an attacker cannot use the status code to confirm an id is real.
       return Response.json({ error: "Ticket not found." }, { status: 404 });
     }
     if (!ok) {
-      // The compare-and-swap matched nothing: the ticket is not in a state this
-      // action is legal from. 409 rather than 400 — the request was well formed,
-      // it just lost the race or was replayed.
       return Response.json(
         { error: `Cannot ${body.action} a ticket that is ${STATE_PHRASE[ticket.status] ?? ticket.status}.`, ticket },
         { status: 409 }

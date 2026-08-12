@@ -91,6 +91,14 @@ const showtimes = generateShowtimes(id);
         The booking record itself is real and is saved to the database.
       </p>
 
+      {!Astro.locals.user && (
+        <p class="signin-prompt">
+          <a href={`/login?next=${encodeURIComponent(Astro.url.pathname)}`}>Log in</a>
+          or <a href={`/signup?next=${encodeURIComponent(Astro.url.pathname)}`}>sign up</a>
+          to book tickets. Bookings belong to your account.
+        </p>
+      )}
+
       <div class="booking-grid">
         <label>
           Cinema
@@ -111,7 +119,7 @@ const showtimes = generateShowtimes(id);
       </div>
 
       <p class="total" id="total"></p>
-      <button id="book" class="primary">Book now</button>
+      <button id="book" class="primary" disabled={!Astro.locals.user}>Book now</button>
       <p class="form-status" id="booking-status" role="status"></p>
 
       {/* Data island: the generated lineup, handed to the client as JSON rather
@@ -129,7 +137,6 @@ const showtimes = generateShowtimes(id);
 </html>
 
 <script>
-  import { rememberTicketId } from "../../lib/ticket-storage.js";
   import { formatCents } from "../../lib/money.js";
 
   const panel = document.getElementById("booking");
@@ -203,10 +210,15 @@ const showtimes = generateShowtimes(id);
         }),
       });
       const data = await res.json();
+
+      // Session expired between page load and click: send them to log in and
+      // come straight back rather than showing a bare error.
+      if (res.status === 401) {
+        window.location.href = `/login?next=${encodeURIComponent(window.location.pathname)}`;
+        return;
+      }
       if (!res.ok) throw new Error(data.error ?? `Booking failed (${res.status})`);
 
-      // Remember before navigating: an abandoned checkout is still your ticket.
-      rememberTicketId(data.ticket.id);
       window.location.href = `/checkout/${data.ticket.id}`;
     } catch (err) {
       statusEl.textContent = err.message;
@@ -256,4 +268,7 @@ const showtimes = generateShowtimes(id);
   .primary:hover:not(:disabled) { transform: translateY(-2px); }
   .primary:disabled { opacity: 0.55; cursor: default; }
   .form-status { color: #f87171; font-size: 0.9rem; min-height: 1.2em; margin: 0.8rem 0 0; }
+  .signin-prompt { background: #1e1e38; border-radius: 12px; padding: 0.8rem 1.1rem; font-size: 0.9rem; color: #d1d5db; line-height: 1.6; }
+  .signin-prompt a { color: #a855f7; text-decoration: none; font-weight: 600; }
+  .signin-prompt a:hover { text-decoration: underline; }
 </style>

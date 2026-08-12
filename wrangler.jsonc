@@ -13,5 +13,14 @@
       "database_name": "movie-finder-db",
       "database_id": "a52140a4-4f2d-4743-9f8d-630139f7aa21"
     }
+  ],
+  // Session store. KV rather than D1 because sessions are read on every
+  // request and expire on their own via expirationTtl. Note the trade-off:
+  // KV propagates in <= 60s, so a logout is not instant at every edge.
+  "kv_namespaces": [
+    {
+      "binding": "SESSIONS",
+      "id": "5eb9a17e147a40df99cf07cd3a87ec3d"
+    }
   ]
 }

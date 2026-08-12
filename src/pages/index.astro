@@ -1,5 +1,10 @@
 ---
-// Movies load in the browser via /api/movies (true infinite scroll)
+// Server-rendered now: the header depends on who is signed in, and a
+// prerendered page would bake one answer into the HTML for everybody.
+export const prerender = false;
+
+// Movies still load in the browser via /api/movies (true infinite scroll).
+const user = Astro.locals.user;
 ---
 
 <html lang="en">
@@ -13,7 +18,20 @@
     <header class="hero">
       <h1>🎬 Movie Finder</h1>
       <p class="subtitle">Discover the most popular movies right now</p>
-      <a href="/tickets" class="tickets-link">🎟️ My Tickets</a>
+      <nav class="account">
+        {user ? (
+          <>
+            <a href="/tickets" class="tickets-link">🎟️ My Tickets</a>
+            <span class="account-email">{user.email}</span>
+            <button type="button" id="logout" class="linklike">Log out</button>
+          </>
+        ) : (
+          <>
+            <a href="/login" class="tickets-link">Log in</a>
+            <a href="/signup" class="tickets-link">Sign up</a>
+          </>
+        )}
+      </nav>
     </header>
 	<nav class="tabs">
   <button class="tab active" data-genre="">All</button>
@@ -62,8 +80,12 @@
   .hero h1 { font-size: 3.2rem; font-weight: 800; margin: 0; background: linear-gradient(90deg, #a855f7, #ec4899, #f59e0b); background-size: 200% auto; -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; animation: shine 4s linear infinite; }
   @keyframes shine { to { background-position: 200% center; } }
   .subtitle { color: #9ca3af; font-size: 1.1rem; margin-top: 0.5rem; }
-  .tickets-link { display: inline-block; margin-top: 0.75rem; color: #a855f7; text-decoration: none; font-weight: 600; font-size: 0.95rem; }
+  .account { display: flex; gap: 1.25rem; justify-content: center; align-items: center; flex-wrap: wrap; margin-top: 0.75rem; }
+  .tickets-link { color: #a855f7; text-decoration: none; font-weight: 600; font-size: 0.95rem; }
   .tickets-link:hover { text-decoration: underline; }
+  .account-email { color: #6b7280; font-size: 0.9rem; }
+  .linklike { background: none; border: none; padding: 0; color: #a855f7; font-family: inherit; font-weight: 600; font-size: 0.95rem; cursor: pointer; }
+  .linklike:hover { text-decoration: underline; }
   .search-container { text-align: center; margin-bottom: 2.5rem; }
   #search { width: 100%; max-width: 400px; padding: 0.8rem 1.2rem; border: none; border-radius: 30px; background: #1e1e38; color: #fff; font-size: 1rem; font-family: inherit; outline: none; transition: box-shadow 0.2s; }
   #search:focus { box-shadow: 0 0 0 2px #a855f7; }
@@ -78,6 +100,21 @@
 </style>
 
 <script>
+  document.getElementById("logout")?.addEventListener("click", async (event) => {
+    event.currentTarget.disabled = true;
+    // POST, not a link: logging out is a state change, and a GET could be
+    // triggered by a prefetch or an <img> tag on someone else's page.
+    //
+    // The JSON content-type is required, not decorative: Astro's built-in CSRF
+    // check rejects a POST that has neither an Origin header nor a non-form
+    // content type as a cross-site form submission.
+    await fetch("/api/auth/logout", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+    });
+    window.location.reload();
+  });
+
   const grid = document.getElementById("movies");
   const searchInput = document.getElementById("search");
   const sentinel = document.getElementById("sentinel");

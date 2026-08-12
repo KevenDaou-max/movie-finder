@@ -1,13 +1,20 @@
 ---
 export const prerender = false;
 
-import { getTicket } from "../../lib/tickets.js";
+import { getTicketForUser } from "../../lib/tickets.js";
 import { formatShowtime } from "../../lib/showtimes.js";
 import { formatCents } from "../../lib/money.js";
 
+if (!Astro.locals.user) {
+  return Astro.redirect(`/login?next=${encodeURIComponent(Astro.url.pathname)}`);
+}
+
 // Read straight from D1. This is a record, not a cache: if the read fails the
 // page should error rather than invent an order summary.
-const ticket = await getTicket(Astro.params.id);
+//
+// Scoped to the session user, so another user's ticket id resolves to null and
+// falls into the 404 below — identical to an id that was never issued.
+const ticket = await getTicketForUser(Astro.params.id, Astro.locals.user.id);
 
 if (!ticket) {
   return new Response("Ticket not found", { status: 404 });
@@ -61,14 +68,8 @@ const total = ticket.unit_price_cents * ticket.seats;
 </html>
 
 <script>
-  import { rememberTicketId } from "../../lib/ticket-storage.js";
-
   const panel = document.querySelector("[data-ticket-id]");
   const ticketId = panel.dataset.ticketId;
-
-  // Also remember here, so opening a checkout link in a new browser adds the
-  // ticket to that browser's list. The id is the only credential there is.
-  rememberTicketId(ticketId);
 
   document.getElementById("pay")?.addEventListener("click", async (event) => {
     const button = event.currentTarget;

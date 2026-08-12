@@ -1,6 +1,21 @@
 ---
-// No server data: the ticket ids live in the browser, so this page is a static
-// shell that fetches its own contents.
+// Was a static shell that fetched whatever ids the browser remembered. Now it
+// is server-rendered for one authenticated user, so the page cannot even be
+// built without knowing who is asking.
+export const prerender = false;
+
+import { getTicketsForUser } from "../lib/tickets.js";
+import { formatShowtime } from "../lib/showtimes.js";
+import { formatCents } from "../lib/money.js";
+
+if (!Astro.locals.user) {
+  return Astro.redirect(`/login?next=${encodeURIComponent(Astro.url.pathname)}`);
+}
+
+// No id list is involved anywhere: the session decides which rows exist.
+const tickets = await getTicketsForUser(Astro.locals.user.id);
+
+const STATUS_LABELS = { booked: "Awaiting payment", paid: "Paid", redeemed: "Redeemed" };
 ---
 
 <html lang="en">
@@ -15,120 +30,72 @@
 
     <header class="hero">
       <h1>🎟️ My Tickets</h1>
-      <p class="subtitle">Bookings saved in this browser</p>
+      <p class="subtitle">Signed in as {Astro.locals.user.email}</p>
     </header>
 
     <p class="mock-note">
       <strong>Mock bookings.</strong> The cinemas, showtimes and payments are invented.
-      Tickets are remembered by <em>this browser only</em> — there are no accounts, so clearing
-      site data or switching device makes them unreachable.
+      The booking records are real and belong to your account.
     </p>
 
-    <div class="tickets" id="tickets"></div>
-    <p class="status" id="status">Loading…</p>
+    {tickets.length === 0 && (
+      <p class="status">No tickets yet. Book one from any movie page.</p>
+    )}
+
+    <div class="tickets">
+      {tickets.map((ticket) => (
+        <div class="ticket" data-ticket-id={ticket.id}>
+          <div class="ticket-head">
+            <h2>{ticket.movie_title}</h2>
+            <span class={`badge badge-${ticket.status}`}>{STATUS_LABELS[ticket.status] ?? ticket.status}</span>
+          </div>
+          <p class="detail-line">{ticket.cinema}</p>
+          <p class="detail-line">{formatShowtime(ticket.showtime)}</p>
+          <p class="detail-line">
+            {ticket.seats} seat(s) · {formatCents(ticket.unit_price_cents * ticket.seats)}
+          </p>
+          {ticket.confirmation && <p class="code">{ticket.confirmation}</p>}
+
+          <div class="actions">
+            {ticket.status === "booked" && (
+              <a class="primary" href={`/checkout/${ticket.id}`}>Complete payment</a>
+            )}
+            {ticket.status === "paid" && (
+              <button class="primary redeem" type="button">Redeem</button>
+            )}
+          </div>
+          <p class="row-status"></p>
+        </div>
+      ))}
+    </div>
   </body>
 </html>
 
 <script>
-  import { readTicketIds } from "../lib/ticket-storage.js";
-  import { formatShowtime } from "../lib/showtimes.js";
-  import { formatCents } from "../lib/money.js";
+  for (const button of document.querySelectorAll(".redeem")) {
+    button.addEventListener("click", async (event) => {
+      const card = event.currentTarget.closest("[data-ticket-id]");
+      const rowStatus = card.querySelector(".row-status");
+      event.currentTarget.disabled = true;
+      rowStatus.textContent = "Redeeming…";
 
-  const list = document.getElementById("tickets");
-  const status = document.getElementById("status");
+      try {
+        const res = await fetch(`/api/tickets/${card.dataset.ticketId}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "redeem" }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error ?? `Redeem failed (${res.status})`);
 
-  const STATUS_LABELS = { booked: "Awaiting payment", paid: "Paid", redeemed: "Redeemed" };
-
-  function render(tickets) {
-    list.innerHTML = "";
-
-    for (const ticket of tickets) {
-      const total = ticket.unit_price_cents * ticket.seats;
-
-      const card = document.createElement("div");
-      card.className = "ticket";
-      card.innerHTML = `
-        <div class="ticket-head">
-          <h2>${ticket.movie_title}</h2>
-          <span class="badge badge-${ticket.status}">${STATUS_LABELS[ticket.status] ?? ticket.status}</span>
-        </div>
-        <p class="detail-line">${ticket.cinema}</p>
-        <p class="detail-line">${formatShowtime(ticket.showtime)}</p>
-        <p class="detail-line">${ticket.seats} seat(s) · ${formatCents(total)}</p>
-        ${ticket.confirmation ? `<p class="code">${ticket.confirmation}</p>` : ""}
-        <div class="actions"></div>
-        <p class="row-status"></p>`;
-
-      const actions = card.querySelector(".actions");
-
-      if (ticket.status === "booked") {
-        const link = document.createElement("a");
-        link.className = "primary";
-        link.href = `/checkout/${ticket.id}`;
-        link.textContent = "Complete payment";
-        actions.appendChild(link);
+        // Re-render from the server rather than patching one card.
+        window.location.reload();
+      } catch (err) {
+        rowStatus.textContent = err.message;
+        event.currentTarget.disabled = false;
       }
-
-      if (ticket.status === "paid") {
-        const button = document.createElement("button");
-        button.className = "primary";
-        button.textContent = "Redeem";
-        button.addEventListener("click", () => redeem(ticket.id, button, card.querySelector(".row-status")));
-        actions.appendChild(button);
-      }
-
-      list.appendChild(card);
-    }
+    });
   }
-
-  async function redeem(id, button, rowStatus) {
-    button.disabled = true;
-    rowStatus.textContent = "Redeeming…";
-
-    try {
-      const res = await fetch(`/api/tickets/${id}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "redeem" }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? `Redeem failed (${res.status})`);
-      // Reload the whole list from the server rather than patching one card.
-      await load();
-    } catch (err) {
-      rowStatus.textContent = err.message;
-      button.disabled = false;
-    }
-  }
-
-  async function load() {
-    const ids = readTicketIds();
-
-    if (!ids.length) {
-      list.innerHTML = "";
-      status.textContent = "No tickets yet. Book one from any movie page.";
-      return;
-    }
-
-    try {
-      const res = await fetch("/api/tickets/lookup", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ids }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? `Could not load tickets (${res.status})`);
-
-      render(data.tickets);
-      // Ids can outlive their rows (e.g. a wiped database), so report on what
-      // actually came back rather than on what the browser remembers.
-      status.textContent = data.tickets.length ? "" : "No tickets found for this browser.";
-    } catch (err) {
-      status.textContent = err.message;
-    }
-  }
-
-  load();
 </script>
 
 <style is:global>
