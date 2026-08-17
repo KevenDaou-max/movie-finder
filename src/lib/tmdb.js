@@ -44,6 +44,46 @@ export function fetchDetail(id) {
   return tmdb(`/movie/${id}`, { append_to_response: "videos" });
 }
 
+/**
+ * Resolve a person's name to a TMDB id. This is the step that makes "a movie
+ * with The Rock in it" work at all: `with_cast` needs an id, and no amount of
+ * semantic similarity over plot summaries would find one, because overviews
+ * rarely name their cast.
+ */
+export async function searchPerson(name) {
+  const data = await tmdb("/search/person", { query: name });
+  return data.results?.[0] ?? null;
+}
+
+/**
+ * Resolve a mood word to a TMDB keyword id. TMDB maintains a large curated
+ * keyword vocabulary ('feel-good', 'coming of age', 'dystopia'), which gives
+ * us a human-authored semantic layer without embedding anything.
+ */
+export async function searchKeyword(word) {
+  const data = await tmdb("/search/keyword", { query: word });
+  const results = data.results ?? [];
+  if (!results.length) return null;
+
+  // Do NOT just take results[0]. TMDB ranks keyword matches by string
+  // similarity, so "feel good" returns "feel good music" (which tags no films)
+  // ahead of "feelgood" (which tags plenty). Prefer an exact match ignoring
+  // punctuation and spacing, then the shortest name — shorter keywords are
+  // more general and therefore tag more movies.
+  const flatten = (text) => text.toLowerCase().replace(/[^a-z0-9]/g, "");
+  const target = flatten(word);
+
+  return (
+    results.find((keyword) => flatten(keyword.name) === target) ??
+    results.slice().sort((a, b) => a.name.length - b.name.length)[0]
+  );
+}
+
+/** Structured search. `params` is built by us, never by the model. */
+export function fetchDiscover(params, page) {
+  return tmdb("/discover/movie", { ...params, page });
+}
+
 /** Change this to serve a different country's streaming availability. */
 export const WATCH_REGION = "US";
 

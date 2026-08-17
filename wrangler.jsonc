@@ -22,5 +22,15 @@
       "binding": "SESSIONS",
       "id": "5eb9a17e147a40df99cf07cd3a87ec3d"
     }
-  ]
+  ],
+  // Workers AI needs no namespace or key -- unlike D1 and KV there is no
+  // resource to create, just this binding.
+  //
+  // `remote: true` because inference cannot run locally: without it `env.AI`
+  // is unusable in `astro dev`. It does mean local development consumes real
+  // Neurons from the daily budget.
+  "ai": {
+    "binding": "AI",
+    "remote": true
+  }
 }

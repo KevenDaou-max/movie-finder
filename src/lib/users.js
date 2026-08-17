@@ -111,15 +111,15 @@ export async function upgradeHashIfNeeded(user, pin) {
  *
  * Returns true when the caller is over the cap.
  */
-export async function throttleExceeded(clientKey) {
+export async function throttleExceeded(clientKey, cap = AUTH_ATTEMPT_CAP, windowSeconds = AUTH_WINDOW_SECONDS) {
   const now = nowSeconds();
   const row = await db()
     .prepare("SELECT window_start, attempts FROM auth_throttle WHERE client_key = ?")
     .bind(clientKey)
     .first();
 
-  if (row && now - row.window_start < AUTH_WINDOW_SECONDS) {
-    if (row.attempts >= AUTH_ATTEMPT_CAP) return true;
+  if (row && now - row.window_start < windowSeconds) {
+    if (row.attempts >= cap) return true;
     await db()
       .prepare("UPDATE auth_throttle SET attempts = attempts + 1 WHERE client_key = ?")
       .bind(clientKey)

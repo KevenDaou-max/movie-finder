@@ -44,7 +44,17 @@ const user = Astro.locals.user;
 </nav>
 
     <div class="search-container">
-      <input type="text" id="search" placeholder="🔍 Search movies..." />
+      <div class="search-row">
+        <input type="text" id="search" placeholder="🔍 Search movies..." />
+        <div class="mode-toggle" role="group" aria-label="Search mode">
+          <button type="button" class="mode active" data-mode="keyword">Keyword</button>
+          <button type="button" class="mode" data-mode="ai">✨ AI</button>
+        </div>
+      </div>
+      <!-- Only shown in AI mode: inference costs a Neuron budget, so it runs on
+           submit rather than on every keystroke. -->
+      <p class="mode-hint" id="mode-hint" hidden>Describe what you feel like watching, then press Enter.</p>
+      <p class="interpretation" id="interpretation" hidden></p>
     </div>
 
     <div class="movies" id="movies"></div>
@@ -89,6 +99,19 @@ const user = Astro.locals.user;
   .search-container { text-align: center; margin-bottom: 2.5rem; }
   #search { width: 100%; max-width: 400px; padding: 0.8rem 1.2rem; border: none; border-radius: 30px; background: #1e1e38; color: #fff; font-size: 1rem; font-family: inherit; outline: none; transition: box-shadow 0.2s; }
   #search:focus { box-shadow: 0 0 0 2px #a855f7; }
+  .search-row { display: flex; gap: 0.75rem; justify-content: center; align-items: center; flex-wrap: wrap; }
+  .mode-toggle { display: inline-flex; background: #1e1e38; border-radius: 30px; padding: 4px; gap: 4px; }
+  .mode { border: none; background: transparent; color: #9ca3af; font-family: inherit; font-size: 0.85rem; font-weight: 600; padding: 0.45rem 1rem; border-radius: 30px; cursor: pointer; transition: background 0.2s, color 0.2s; }
+  .mode:hover { color: #fff; }
+  .mode.active { background: linear-gradient(90deg, #a855f7, #ec4899); color: #fff; }
+  .mode-hint { color: #6b7280; font-size: 0.8rem; margin: 0.75rem 0 0; }
+  .interpretation { max-width: 640px; margin: 1rem auto 0; padding: 0.6rem 1.1rem; border-radius: 30px; font-size: 0.9rem; background: rgba(168, 85, 247, 0.12); border: 1px solid rgba(168, 85, 247, 0.35); color: #d8b4fe; }
+  .interpretation.fallback { background: rgba(245, 158, 11, 0.12); border-color: rgba(245, 158, 11, 0.35); color: #fcd34d; }
+  .interpretation.thinking { animation: pulse 1.4s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: 0.45; } }
+  /* Sized to match .movie-card so the grid does not reflow when results land. */
+  .skeleton { background: linear-gradient(100deg, #15152a 30%, #1e1e38 50%, #15152a 70%); background-size: 200% 100%; border-radius: 16px; aspect-ratio: 2 / 3.35; animation: shimmer 1.4s linear infinite; }
+  @keyframes shimmer { to { background-position: -200% 0; } }
   .movies { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 1.75rem; max-width: 1250px; margin: 0 auto; }
   .movie-card { background: #15152a; border-radius: 16px; overflow: hidden; transition: transform 0.25s ease, box-shadow 0.25s ease; cursor: pointer; text-decoration: none; color: inherit; display: block; }
   .movie-card:hover { transform: translateY(-8px); box-shadow: 0 12px 30px rgba(168, 85, 247, 0.35); }
@@ -189,6 +212,7 @@ const user = Astro.locals.user;
   // real search (debounced)
   let searchTimeout;
   searchInput.addEventListener("input", () => {
+    if (mode === "ai") return; // AI mode submits on Enter, never per keystroke
     clearTimeout(searchTimeout);
     searchTimeout = setTimeout(async () => {
       const term = searchInput.value.trim();
@@ -218,6 +242,79 @@ const user = Astro.locals.user;
         grid.innerHTML = `<p class="no-results">Search failed.</p>`;
       }
     }, 400);
+  });
+
+  // ---- AI search ---------------------------------------------------------
+  const modeButtons = document.querySelectorAll(".mode");
+  const modeHint = document.getElementById("mode-hint");
+  const interpretation = document.getElementById("interpretation");
+  let mode = "keyword";
+
+  const KEYWORD_PLACEHOLDER = "🔍 Search movies...";
+  const AI_PLACEHOLDER = "✨ e.g. something uplifting for a rainy day";
+
+  function setMode(next) {
+    mode = next;
+    for (const button of modeButtons) button.classList.toggle("active", button.dataset.mode === next);
+    searchInput.placeholder = next === "ai" ? AI_PLACEHOLDER : KEYWORD_PLACEHOLDER;
+    modeHint.hidden = next !== "ai";
+    interpretation.hidden = true;
+    clearTimeout(searchTimeout); // a pending keyword search must not land in AI mode
+  }
+
+  for (const button of modeButtons) {
+    button.addEventListener("click", () => {
+      setMode(button.dataset.mode);
+      searchInput.focus();
+    });
+  }
+
+  /** Placeholder cards sized like real ones, so the grid doesn't jump. */
+  function showSkeletons(count = 10) {
+    grid.innerHTML = Array.from({ length: count }, () => `<div class="skeleton"></div>`).join("");
+  }
+
+  async function runAiSearch(term) {
+    status.style.display = "none";
+    interpretation.hidden = false;
+    interpretation.className = "interpretation thinking";
+    interpretation.textContent = "✨ Interpreting your search…";
+    showSkeletons();
+
+    try {
+      const res = await fetch(`/api/ai-search?q=${encodeURIComponent(term)}`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? `AI search failed (${res.status})`);
+
+      // Always say which path produced these results. An AI feature that
+      // silently returns something plausible is one people stop trusting.
+      if (data.strategy === "ai") {
+        interpretation.className = "interpretation";
+        interpretation.textContent = `✨ Showing ${data.interpretation}`;
+      } else {
+        interpretation.className = "interpretation fallback";
+        interpretation.textContent = `${data.reason} — showing keyword results for "${term}" instead.`;
+      }
+
+      grid.innerHTML = "";
+      if (!data.results.length) {
+        grid.innerHTML = `<p class="no-results">No movies found for "${term}" 😕</p>`;
+      } else {
+        renderMovies(data.results);
+      }
+    } catch (err) {
+      interpretation.className = "interpretation fallback";
+      interpretation.textContent = err.message;
+      grid.innerHTML = `<p class="no-results">Search failed.</p>`;
+    }
+  }
+
+  searchInput.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" || mode !== "ai") return;
+    event.preventDefault();
+    const term = searchInput.value.trim();
+    if (term) runAiSearch(term);
+    else resetBrowse();
   });
 
   loadMore();

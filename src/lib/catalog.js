@@ -1,5 +1,5 @@
 import { env } from "cloudflare:workers";
-import { fetchDetail, fetchList, fetchSearch, fetchWatchProviders, WATCH_REGION } from "./tmdb.js";
+import { fetchDetail, fetchDiscover, fetchList, fetchSearch, fetchWatchProviders, WATCH_REGION } from "./tmdb.js";
 
 // Seconds. Details barely change; popularity ordering does; streaming rights
 // change with licensing deals, so providers sit between the two.
@@ -54,12 +54,24 @@ function genreStatements(movieId, genres) {
   const statements = [db().prepare("DELETE FROM movie_genres WHERE movie_id = ?").bind(movieId)];
   for (const genre of genres) {
     // movie_genres has a foreign key onto genres, and TMDB can introduce a
-    // genre id our seed doesn't know. Insert a placeholder so the batch cannot
-    // fail; a later detail fetch carries the real name and corrects it.
+    // genre id our seed doesn't know, so the genre row must exist first.
+    //
+    // The two cases are NOT symmetric, and conflating them was a real bug:
+    // list responses carry genre ids with no names, and an unconditional
+    // upsert wrote "Genre 878" over the seeded "Science Fiction". Browsing
+    // happens far more often than opening a detail page, so placeholders won
+    // and every genre name in the database was eventually destroyed.
     statements.push(
-      db()
-        .prepare("INSERT INTO genres (id, name) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET name = excluded.name")
-        .bind(genre.id, genre.name ?? `Genre ${genre.id}`)
+      genre.name
+        // A detail response carries real names; treat those as authoritative.
+        ? db()
+            .prepare("INSERT INTO genres (id, name) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET name = excluded.name")
+            .bind(genre.id, genre.name)
+        // A list response knows only the id. Insert a placeholder if the genre
+        // is entirely unknown, but never overwrite a name we already have.
+        : db()
+            .prepare("INSERT OR IGNORE INTO genres (id, name) VALUES (?, ?)")
+            .bind(genre.id, `Genre ${genre.id}`)
     );
     statements.push(
       db()
@@ -202,6 +214,30 @@ export function getListPage({ genre, page, waitUntil }) {
     keyValue: genre ? `genre:${genre}` : "popular",
     page,
     fetchFresh: () => fetchList({ genre, page }),
+    waitUntil,
+  });
+}
+
+/**
+ * AI search results ride the exact same read-through machinery as the genre
+ * tabs: same table, same hydration, same stale-on-error behaviour, same
+ * X-Movie-Cache reporting. The only new thing is the key.
+ *
+ * Keys are built from sorted parameters so that two identical searches produce
+ * one cache entry regardless of the order the fields were assembled in.
+ */
+export function getDiscoverPage({ params, page, waitUntil }) {
+  const key = Object.keys(params)
+    .sort()
+    .map((name) => `${name}=${params[name]}`)
+    .join("&");
+
+  return getPage({
+    table: "list_pages",
+    keyColumn: "list_key",
+    keyValue: `discover:${key}`,
+    page,
+    fetchFresh: () => fetchDiscover(params, page),
     waitUntil,
   });
 }
