@@ -1,6 +1,7 @@
 ---
 export const prerender = false;
 
+import { recordActivity } from "../../lib/activity.js";
 import { getMovieDetail, getWatchProviders } from "../../lib/catalog.js";
 import { generateShowtimes } from "../../lib/showtimes.js";
 import { formatCents } from "../../lib/money.js";
@@ -24,6 +25,14 @@ Astro.response.headers.set(
   "X-Movie-Cache",
   `detail=${movie.source}; providers=${providers?.source ?? "none"}`
 );
+
+// Telemetry, not a record: fired into waitUntil so the page never waits on it,
+// and recordActivity swallows its own errors. Losing a view costs a little
+// recommendation quality; blocking the render would cost the whole page.
+if (Astro.locals.user) {
+  const write = recordActivity(Astro.locals.user.id, movie.id, "view");
+  if (waitUntil) waitUntil(write);
+}
 
 const OFFER_LABELS = { flatrate: "Stream", free: "Free", ads: "Free with ads", rent: "Rent", buy: "Buy" };
 const offerSections = providers ? Object.entries(providers.offers) : [];

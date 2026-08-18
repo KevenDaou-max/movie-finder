@@ -1,3 +1,4 @@
+import { recordActivity } from "../../../lib/activity.js";
 import { getCachedTitle } from "../../../lib/catalog.js";
 import { BOOKING_CAP, BOOKING_WINDOW_SECONDS, bookingWindowStart, getClientKey } from "../../../lib/rate-limit.js";
 import { findSlot } from "../../../lib/showtimes.js";
@@ -60,6 +61,7 @@ export async function POST({ request, locals }) {
   const movieTitle = (await getCachedTitle(movieId)) ?? clientTitle.slice(0, MAX_TITLE_LENGTH) ?? "";
 
   const windowStart = bookingWindowStart();
+  const waitUntil = locals.cfContext?.waitUntil.bind(locals.cfContext);
 
   try {
     const ticket = await createTicket({
@@ -88,6 +90,11 @@ export async function POST({ request, locals }) {
         { status: 429, headers: { "Retry-After": String(retryAfter) } }
       );
     }
+
+    // Booking is the strongest taste signal there is. Recorded only after the
+    // ticket actually exists, and never allowed to affect the response.
+    const activity = recordActivity(locals.user.id, movieId, "book");
+    if (waitUntil) waitUntil(activity);
 
     return Response.json({ ticket }, { status: 201 });
   } catch (err) {

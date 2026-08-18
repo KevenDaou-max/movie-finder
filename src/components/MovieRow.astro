@@ -1,0 +1,69 @@
+---
+/**
+ * One titled, horizontally-scrolling row of movie cards.
+ *
+ * Rendering nothing for an empty row is deliberate: a section that failed to
+ * load should vanish, not show an error. The homepage never breaks because one
+ * TMDB list was unavailable.
+ */
+const { title, subtitle, movies = [], ranked = false } = Astro.props;
+---
+
+{movies.length > 0 && (
+  <section class="row">
+    <div class="row-head">
+      <h2>{title}</h2>
+      {subtitle && <p class="row-sub">{subtitle}</p>}
+    </div>
+
+    <div class="row-scroll">
+      {movies.map((movie, index) => (
+        <a class="movie-card row-card" href={`/movie/${movie.id}`}>
+          <div class="poster-wrap">
+            {/* Ranked rows are leaderboards, so the position is the point. */}
+            {ranked && <span class="rank">{index + 1}</span>}
+            <img
+              src={movie.poster_path
+                ? `https://image.tmdb.org/t/p/w500${movie.poster_path}`
+                : "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'/%3E"}
+              alt={movie.title}
+              loading="lazy"
+            />
+            <span class="rating">⭐ {(movie.vote_average ?? 0).toFixed(1)}</span>
+          </div>
+          <h3>{movie.title}</h3>
+        </a>
+      ))}
+    </div>
+  </section>
+)}
+
+<style is:global>
+  .row { max-width: 1250px; margin: 0 auto 2.5rem; }
+  .row-head { display: flex; align-items: baseline; gap: 0.9rem; flex-wrap: wrap; margin-bottom: 1rem; }
+  .row-head h2 {
+    font-size: 1.5rem; font-weight: 800; margin: 0;
+    background: linear-gradient(90deg, #a855f7, #ec4899, #f59e0b);
+    background-size: 200% auto; -webkit-background-clip: text; background-clip: text;
+    -webkit-text-fill-color: transparent; animation: shine 4s linear infinite;
+  }
+  .row-sub { color: #9ca3af; font-size: 0.85rem; margin: 0; }
+
+  /* Horizontal scroller rather than a wrapping grid: a browse row is a
+     shortlist, and scroll-snap keeps cards aligned as it moves. */
+  .row-scroll {
+    display: flex; gap: 1.25rem; overflow-x: auto; padding: 0.5rem 0.25rem 1rem;
+    scroll-snap-type: x proximity; scrollbar-width: thin;
+    scrollbar-color: #2a2a4a transparent;
+  }
+  .row-scroll::-webkit-scrollbar { height: 8px; }
+  .row-scroll::-webkit-scrollbar-thumb { background: #2a2a4a; border-radius: 8px; }
+  .row-card { flex: 0 0 165px; scroll-snap-align: start; }
+  .row-card h3 { font-size: 0.9rem; }
+
+  .rank {
+    position: absolute; bottom: 8px; left: 8px; z-index: 2;
+    font-size: 1.5rem; font-weight: 800; line-height: 1; color: #fff;
+    text-shadow: 0 2px 10px rgba(0, 0, 0, 0.9), 0 0 3px rgba(0, 0, 0, 0.9);
+  }
+</style>

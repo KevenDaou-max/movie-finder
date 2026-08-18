@@ -84,6 +84,24 @@ export function fetchDiscover(params, page) {
   return tmdb("/discover/movie", { ...params, page });
 }
 
+// Homepage browse rows. All return the same {page, results, total_pages} shape
+// as /movie/popular, which is why they need no new storage -- just new keys in
+// list_pages. They differ only in how fast the underlying data moves, which is
+// expressed as a TTL at the call site rather than here.
+export const fetchTrending = (page) => tmdb("/trending/movie/week", { page });
+export const fetchNowPlaying = (page) => tmdb("/movie/now_playing", { page });
+export const fetchUpcoming = (page) => tmdb("/movie/upcoming", { page });
+export const fetchTopRated = (page) => tmdb("/movie/top_rated", { page });
+
+/**
+ * TMDB's own recommendations for a film, backed by collaborative signals across
+ * millions of users. Seeding from these beats anything we could compute from
+ * one person's genre tallies -- the same "reuse the better index" reasoning
+ * that made AI search a translator rather than a retriever.
+ */
+export const fetchRecommendations = (movieId, page) =>
+  tmdb(`/movie/${movieId}/recommendations`, { page });
+
 /** Change this to serve a different country's streaming availability. */
 export const WATCH_REGION = "US";
 

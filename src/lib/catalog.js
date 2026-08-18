@@ -1,5 +1,8 @@
 import { env } from "cloudflare:workers";
-import { fetchDetail, fetchDiscover, fetchList, fetchSearch, fetchWatchProviders, WATCH_REGION } from "./tmdb.js";
+import {
+  fetchDetail, fetchDiscover, fetchList, fetchNowPlaying, fetchRecommendations, fetchSearch,
+  fetchTopRated, fetchTrending, fetchUpcoming, fetchWatchProviders, WATCH_REGION,
+} from "./tmdb.js";
 
 // Seconds. Details barely change; popularity ordering does; streaming rights
 // change with licensing deals, so providers sit between the two.
@@ -134,10 +137,15 @@ async function hydrate(ids) {
 }
 
 /**
- * Shared read-through path for the two paginated endpoints. `page` order comes
- * from the stored id array, so results stay stable as TMDB's popularity drifts.
+ * Shared read-through path for every paginated list. `page` order comes from
+ * the stored id array, so results stay stable as TMDB's popularity drifts.
+ *
+ * `ttl` is per-call rather than per-table because list_pages now holds rows
+ * whose data moves at very different speeds: trending is recomputed constantly
+ * while top-rated is effectively static. Defaulting it keeps every existing
+ * caller unchanged.
  */
-async function getPage({ table, keyColumn, keyValue, page, fetchFresh, waitUntil }) {
+async function getPage({ table, keyColumn, keyValue, page, fetchFresh, waitUntil, ttl }) {
   let cached = null;
   try {
     cached = await db()
@@ -154,7 +162,9 @@ async function getPage({ table, keyColumn, keyValue, page, fetchFresh, waitUntil
     return results.length ? { page, results, total_pages: cached.total_pages, source } : null;
   };
 
-  if (cached && isFresh(cached.fetched_at, TTL[table === "search_cache" ? "search" : "list"])) {
+  const effectiveTtl = ttl ?? TTL[table === "search_cache" ? "search" : "list"];
+
+  if (cached && isFresh(cached.fetched_at, effectiveTtl)) {
     try {
       const hit = await serveCached("cache");
       if (hit) return hit;
@@ -217,6 +227,46 @@ export function getListPage({ genre, page, waitUntil }) {
     waitUntil,
   });
 }
+
+/**
+ * Homepage browse rows. Each is one new `list_key` in list_pages — no new
+ * table, no new columns — and differs only in how quickly its data goes stale.
+ *
+ * TTLs are chosen from how fast TMDB actually changes each list, not from
+ * guesswork: trending is recomputed constantly, top-rated barely moves in a
+ * year, so refreshing them at the same rate would either waste calls or serve
+ * stale data.
+ */
+export const ROW_TTL = {
+  trending: 3 * 60 * 60,
+  nowPlaying: 12 * 60 * 60,
+  upcoming: 24 * 60 * 60,
+  topRated: 7 * 24 * 60 * 60,
+  recommendations: 24 * 60 * 60,
+};
+
+const listRow = (keyValue, fetchFresh, ttl, page = 1, waitUntil) =>
+  getPage({ table: "list_pages", keyColumn: "list_key", keyValue, page, fetchFresh, waitUntil, ttl });
+
+export const getTrending = ({ page = 1, waitUntil } = {}) =>
+  listRow("trending", () => fetchTrending(page), ROW_TTL.trending, page, waitUntil);
+
+export const getNowPlaying = ({ page = 1, waitUntil } = {}) =>
+  listRow("now_playing", () => fetchNowPlaying(page), ROW_TTL.nowPlaying, page, waitUntil);
+
+export const getUpcoming = ({ page = 1, waitUntil } = {}) =>
+  listRow("upcoming", () => fetchUpcoming(page), ROW_TTL.upcoming, page, waitUntil);
+
+export const getTopRated = ({ page = 1, waitUntil } = {}) =>
+  listRow("top_rated", () => fetchTopRated(page), ROW_TTL.topRated, page, waitUntil);
+
+/**
+ * TMDB's recommendations for one film. Keyed by movie rather than by user, so a
+ * popular seed is cached ONCE and serves every user who has seen it — which is
+ * why personalised recommendations need no per-user cache table.
+ */
+export const getMovieRecommendations = (movieId, { waitUntil } = {}) =>
+  listRow(`recs:${movieId}`, () => fetchRecommendations(movieId, 1), ROW_TTL.recommendations, 1, waitUntil);
 
 /**
  * AI search results ride the exact same read-through machinery as the genre

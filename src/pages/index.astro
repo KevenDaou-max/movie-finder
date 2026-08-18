@@ -5,6 +5,36 @@ export const prerender = false;
 
 // Movies still load in the browser via /api/movies (true infinite scroll).
 const user = Astro.locals.user;
+
+import MovieRow from "../components/MovieRow.astro";
+import { getNowPlaying, getTopRated, getTrending, getUpcoming } from "../lib/catalog.js";
+import { getRecommendations } from "../lib/recommendations.js";
+
+const waitUntil = Astro.locals.cfContext?.waitUntil.bind(Astro.locals.cfContext);
+
+/**
+ * Every row is fetched independently and independently allowed to fail. One
+ * unavailable TMDB list must never take the homepage down with it, so a
+ * rejection becomes null here and MovieRow renders nothing for it.
+ */
+const safely = (promise) => promise.then((value) => value ?? null).catch(() => null);
+
+// All in parallel: five sequential round trips would be a visible waterfall,
+// whereas together they cost roughly the slowest one.
+const [trending, nowPlaying, upcoming, topRated, recommended] = await Promise.all([
+  safely(getTrending({ waitUntil })),
+  safely(getNowPlaying({ waitUntil })),
+  safely(getUpcoming({ waitUntil })),
+  safely(getTopRated({ waitUntil })),
+  // Logged out, or no history yet, yields null and the Trending row covers it.
+  user ? safely(getRecommendations(user.id, { waitUntil })) : null,
+]);
+
+const recommendedSubtitle = recommended?.because
+  ? `Because you watched ${recommended.because}`
+  : recommended?.basis === "genres"
+    ? "Based on the genres you browse"
+    : null;
 ---
 
 <html lang="en">
@@ -57,6 +87,21 @@ const user = Astro.locals.user;
       <p class="interpretation" id="interpretation" hidden></p>
     </div>
 
+    {/* Browse rows are server-rendered, so they are in the HTML on first paint.
+        They hide while a search is running so results never compete with them. */}
+    <div id="browse-rows">
+      <MovieRow
+        title="✨ Recommended for You"
+        subtitle={recommendedSubtitle}
+        movies={recommended?.movies ?? []}
+      />
+      <MovieRow title="🔥 Trending This Week" movies={trending?.results ?? []} />
+      <MovieRow title="🎬 New & In Theaters" movies={nowPlaying?.results ?? []} />
+      <MovieRow title="📅 Coming Soon" movies={upcoming?.results ?? []} />
+      <MovieRow title="🏆 Top Rated" subtitle="The highest rated of all time" movies={topRated?.results ?? []} ranked />
+    </div>
+
+    <h2 class="grid-heading" id="grid-heading">Popular Movies</h2>
     <div class="movies" id="movies"></div>
     <div id="sentinel" style="height: 1px;"></div>
     <p id="status" style="text-align:center;color:#9ca3af;margin:2rem;">Loading…</p>
@@ -120,6 +165,12 @@ const user = Astro.locals.user;
   .movie-card:hover .poster-wrap img { transform: scale(1.08); }
   .rating { position: absolute; top: 10px; right: 10px; background: rgba(0,0,0,0.75); color: #ffd700; font-weight: 600; font-size: 0.85rem; padding: 4px 8px; border-radius: 8px; backdrop-filter: blur(4px); }
   .movie-card h3 { font-size: 0.95rem; font-weight: 600; margin: 0.85rem 0.85rem 1rem; line-height: 1.3; }
+  .grid-heading {
+    max-width: 1250px; margin: 0 auto 1rem; font-size: 1.5rem; font-weight: 800;
+    background: linear-gradient(90deg, #a855f7, #ec4899, #f59e0b);
+    background-size: 200% auto; -webkit-background-clip: text; background-clip: text;
+    -webkit-text-fill-color: transparent; animation: shine 4s linear infinite;
+  }
 </style>
 
 <script>
@@ -163,7 +214,25 @@ const user = Astro.locals.user;
     });
   }
 
+  // Browse rows are context, not results. They stay visible while browsing or
+  // filtering by genre, and step aside once a search is driving the grid.
+  const browseRows = document.getElementById("browse-rows");
+  const gridHeading = document.getElementById("grid-heading");
+
+  function setBrowseChrome({ showRows, heading }) {
+    if (browseRows) browseRows.hidden = !showRows;
+    if (gridHeading) gridHeading.textContent = heading;
+  }
+
+  const activeGenreLabel = () => document.querySelector(".tab.active")?.textContent?.trim() ?? "";
+
+  function browseHeading() {
+    const label = activeGenreLabel();
+    return !label || label === "All" ? "Popular Movies" : `${label} Movies`;
+  }
+
   function resetBrowse() {
+    setBrowseChrome({ showRows: true, heading: browseHeading() });
     page = 1;
     hasMore = true;
     status.style.display = "";
@@ -222,6 +291,7 @@ const user = Astro.locals.user;
       }
       try {
         status.style.display = "none";   // no loading text during search
+        setBrowseChrome({ showRows: false, heading: `Results for “${term}”` });
         const res = await fetch(`/api/search?q=${encodeURIComponent(term)}`);
         if (!res.ok) throw new Error(`/api/search responded ${res.status}`);
         const data = await res.json();
@@ -276,6 +346,7 @@ const user = Astro.locals.user;
 
   async function runAiSearch(term) {
     status.style.display = "none";
+    setBrowseChrome({ showRows: false, heading: `Results for “${term}”` });
     interpretation.hidden = false;
     interpretation.className = "interpretation thinking";
     interpretation.textContent = "✨ Interpreting your search…";
